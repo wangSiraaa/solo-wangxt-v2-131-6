@@ -539,6 +539,8 @@ def analyze_all_segments(
     quality: list[dict[str, Any]] = []
     for segment in segments:
         result = analyze_segment(segment["data"], segment["channels"], segment["sample_rate"], coefficients, params)
+        result["start_sequence"] = segment.get("start_sequence")
+        result["end_sequence"] = segment.get("end_sequence")
         results.append(result)
         quality.extend(result["quality"])
     if sample_rate_changed and len(segments) > 1:

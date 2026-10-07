@@ -88,6 +88,7 @@ def upload_raw_chunk(
 
     settings = get_settings()
     spool_dir = Path(settings.spool_dir) / manifest_id
+    spool_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(prefix=f"chunk-{sequence}-", dir=spool_dir, delete=False) as tmp:
         temp_path = Path(tmp.name)
     try:

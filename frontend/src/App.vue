@@ -59,16 +59,37 @@
               </option>
             </select>
           </label>
+          <label>阈值规则版本：
+            <select v-model="selectedRuleSetId" style="max-width:360px">
+              <option value="">（不评估）</option>
+              <option v-for="r in ruleSets" :key="r.id" :value="r.id">
+                {{ r.name }} · v{{ r.version }} · {{ r.status }}{{ r.change_note ? ' · ' + r.change_note : '' }}
+              </option>
+            </select>
+          </label>
           <button @click="createTask" :disabled="!selectedCalibrationId">创建/入队</button>
         </div>
+        <details style="margin-bottom:10px">
+          <summary>新建阈值规则版本（同名自动递增版本，旧报告仍冻结当时版本）</summary>
+          <div style="display:flex;gap:8px;margin:6px 0">
+            <input v-model="ruleSetName" placeholder="规则集名称，如 lab-voltage" style="flex:1" />
+            <input v-model="ruleSetNote" placeholder="变更说明（可选）" style="flex:1" />
+          </div>
+          <textarea v-model="ruleSetRulesText" rows="7" style="width:100%;font-family:monospace"></textarea>
+          <div style="margin-top:6px">
+            <button @click="createRuleSet" :disabled="!ruleSetName">保存新版本</button>
+            <span v-if="ruleSetError" class="meta" style="color:#d8274f;margin-left:8px">{{ ruleSetError }}</span>
+          </div>
+        </details>
         <table>
-          <thead><tr><th>任务</th><th>状态</th><th>标定</th><th>尝试</th><th>阶段</th><th>操作</th></tr></thead>
+          <thead><tr><th>任务</th><th>状态</th><th>标定</th><th>阈值规则</th><th>尝试</th><th>阶段</th><th>操作</th></tr></thead>
           <tbody>
             <tr v-for="task in tasks" :key="task.id">
               <td>{{ short(task.id) }}</td>
               <td><span class="badge" :class="task.status">{{ task.status }}</span>
                 <div v-if="task.cancellation_requested" class="meta">取消请求中</div></td>
               <td>{{ short(task.calibration_version_id) }}</td>
+              <td>{{ ruleSetLabel(task.threshold_rule_set_id) }}</td>
               <td>{{ task.attempts }}</td>
               <td class="meta">{{ Object.keys(task.stage_results || {}).join(' → ') }}</td>
               <td>
@@ -88,6 +109,27 @@
             <div class="metric"><span>A 相 THD</span><strong>{{ metric('Va')?.thd_percent?.toFixed(3) ?? '—' }}%</strong></div>
           </div>
           <p class="meta" v-if="report.review_reason">{{ report.review_reason }}</p>
+          <div v-if="report.result.threshold_rule_set" class="threshold-block">
+            <h4>
+              阈值越界提示 — {{ report.result.threshold_rule_set.name }}
+              v{{ report.result.threshold_rule_set.version }}
+              <span class="meta">（任务创建时冻结的版本 · 仅辅助人工复核，不改变质量状态与数值）</span>
+            </h4>
+            <table v-if="thresholdFindings.length">
+              <thead><tr><th>指标</th><th>对象</th><th>实测值</th><th>限值</th><th>判定</th><th>来源段</th></tr></thead>
+              <tbody>
+                <tr v-for="(f, i) in thresholdFindings" :key="i" class="violation">
+                  <td>{{ metricLabel(f.metric) }}</td>
+                  <td>{{ f.channel }}</td>
+                  <td><strong>{{ f.measured.toFixed(4) }} {{ f.unit }}</strong></td>
+                  <td>{{ limitText(f) }}</td>
+                  <td>{{ f.violation === 'above_upper' ? '高于上限' : '低于下限' }}</td>
+                  <td>段 {{ f.segment_index }} · {{ f.sample_rate }} Hz · 块 {{ f.source.start_sequence }}–{{ f.source.end_sequence }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p v-else class="meta">全部已计算指标均在冻结规则限值内；缺失指标不参与比较。</p>
+          </div>
           <SpectrumChart :report="report" />
           <SequenceTable :report="report" />
           <pre>{{ JSON.stringify(qualitySummary, null, 2) }}</pre>
@@ -112,6 +154,16 @@ const issues = ref([])
 const preview = ref({ segments: [] })
 const calibrations = ref([])
 const selectedCalibrationId = ref('')
+const ruleSets = ref([])
+const selectedRuleSetId = ref('')
+const ruleSetName = ref('')
+const ruleSetNote = ref('')
+const ruleSetRulesText = ref(JSON.stringify([
+  { metric: 'rms', channels: ['*'], lower: 280, upper: 320, unit: 'V' },
+  { metric: 'thd_percent', channels: ['*'], upper: 8, unit: '%' },
+  { metric: 'negative_sequence_percent', channels: ['voltage'], upper: 2, unit: '%', sample_rate_min: 6000, sample_rate_max: 6000 }
+], null, 2))
+const ruleSetError = ref('')
 const tasks = ref([])
 const reports = ref([])
 const reportId = ref(null)
@@ -127,8 +179,11 @@ async function loadManifests() {
   manifests.value = await api.manifests()
   if (!selectedId.value && manifests.value.length) selectedId.value = manifests.value[0].id
 }
+async function loadRuleSets() {
+  ruleSets.value = (await unwrap(api.thresholdRuleSets())) || []
+}
 async function refreshAll() {
-  await loadHealth(); await loadManifests(); await loadDetail()
+  await loadHealth(); await loadManifests(); await loadRuleSets(); await loadDetail()
 }
 async function finalize() {
   try { await api.finalize(selectedId.value) } finally { await loadDetail() }
@@ -159,8 +214,29 @@ async function loadDetail() {
   }
 }
 async function createTask() {
-  await api.createTask(selectedId.value, selectedCalibrationId.value)
+  await api.createTask(selectedId.value, selectedCalibrationId.value, selectedRuleSetId.value)
   await loadDetail()
+}
+async function createRuleSet() {
+  ruleSetError.value = ''
+  let rules
+  try {
+    rules = JSON.parse(ruleSetRulesText.value)
+  } catch (error) {
+    ruleSetError.value = `规则 JSON 解析失败：${error.message}`
+    return
+  }
+  try {
+    const created = await api.createThresholdRuleSet({
+      name: ruleSetName.value,
+      change_note: ruleSetNote.value || null,
+      rules
+    })
+    await loadRuleSets()
+    selectedRuleSetId.value = created.id
+  } catch (error) {
+    ruleSetError.value = `保存失败：${error.message}`
+  }
 }
 async function run(id) { await api.runTask(id); await loadDetail() }
 async function retry(id) { await api.retryTask(id); await loadDetail() }
@@ -170,6 +246,24 @@ const metric = (channel) => {
   const first = report.value?.result?.segments?.[0]?.channels?.[channel]
   return first || null
 }
+const METRIC_LABELS = {
+  rms: 'RMS',
+  thd_percent: 'THD',
+  negative_sequence_percent: '负序比例'
+}
+const metricLabel = (metric) => METRIC_LABELS[metric] || metric
+const limitText = (f) => {
+  const parts = []
+  if (f.lower !== null && f.lower !== undefined) parts.push(`下限 ${f.lower} ${f.unit}`)
+  if (f.upper !== null && f.upper !== undefined) parts.push(`上限 ${f.upper} ${f.unit}`)
+  return parts.join(' · ')
+}
+const ruleSetLabel = (id) => {
+  if (!id) return '—'
+  const found = ruleSets.value.find((item) => item.id === id)
+  return found ? `${found.name} v${found.version}` : short(id)
+}
+const thresholdFindings = computed(() => report.value?.result?.threshold_findings || [])
 const qualitySummary = computed(() => {
   if (!report.value) return null
   return {

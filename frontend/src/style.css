@@ -55,3 +55,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { border-bottom: 1px solid #e5ebf3; padding: 7px; text-align: left; }
 pre { white-space: pre-wrap; max-height: 260px; overflow: auto; background: #0f172a; color: #dbeafe; padding: 12px; border-radius: 8px; }
+.threshold-block { border: 1px solid #f3d08a; background: #fffaf0; border-radius: 10px; padding: 10px 14px; margin: 12px 0; }
+.threshold-block h4 { margin: 2px 0 10px; font-size: 14px; }
+.threshold-block tr.violation td { background: #fff3f5; }
+input, textarea, select { border: 1px solid #ccd6e4; border-radius: 7px; padding: 6px 8px; font-size: 13px; }

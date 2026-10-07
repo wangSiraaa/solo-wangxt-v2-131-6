@@ -58,6 +58,31 @@ def make_chunks(sample_chunks=(300, 420), fs: float = 6000.0, channels=None, **w
     return raw_chunks
 
 
+def make_custom_chunks(values: np.ndarray, fs: float = 6000.0, channels=None):
+    """Build a single-chunk manifest from an explicit (samples, channels) array."""
+
+    channels = channels or CHANNELS
+    array = np.asarray(values, dtype="<f4")
+    assert array.ndim == 2 and array.shape[1] == len(channels)
+    raw = array.tobytes()
+    start = datetime(2026, 10, 1, tzinfo=None)
+    return [
+        {
+            "sequence": 0,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "byte_offset": 0,
+            "byte_length": len(raw),
+            "sample_count": int(array.shape[0]),
+            "sample_rate": fs,
+            "channels": channels,
+            "start_time": start.isoformat(),
+            "end_time": (start + timedelta(seconds=(array.shape[0] - 1) / fs)).isoformat(),
+            "encoding": "float32le-interleaved",
+            "raw": raw,
+        }
+    ]
+
+
 def make_rate_change_chunks():
     first = make_chunks(sample_chunks=(300,), fs=6000.0)[0]
     second_values = phase_waveforms(420, fs=7000.0)

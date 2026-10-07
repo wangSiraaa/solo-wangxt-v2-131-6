@@ -16,6 +16,7 @@ from .dsp import analyze_all_segments, group_chunks_by_rate
 from .models import AnalysisTask, CalibrationVersion, Chunk, Manifest, Report, utcnow
 from .services import snapshot_digest
 from .storage import get_object_store
+from .thresholds import evaluate_thresholds
 
 WORKER_ID = os.environ.get("PQ_WORKER_ID", f"worker-{uuid.uuid4().hex[:8]}")
 
@@ -254,6 +255,20 @@ def execute_task(task_id: str, *, lease_seconds: int = 900, crash_after_stage: s
                 params,
                 sample_rate_changed=len({segment["sample_rate"] for segment in segments}) > 1,
             )
+            # Advisory threshold findings are computed after all numeric results,
+            # from the rule set version frozen in the task snapshot. They never
+            # feed back into quality_status or the computed values.
+            frozen_rule_set = snapshot.get("threshold_rule_set")
+            result["threshold_findings"] = evaluate_thresholds(result, frozen_rule_set)
+            result["threshold_rule_set"] = (
+                {
+                    "id": frozen_rule_set["id"],
+                    "name": frozen_rule_set["name"],
+                    "version": frozen_rule_set["version"],
+                }
+                if frozen_rule_set
+                else None
+            )
             save_stage(
                 db,
                 task,
@@ -262,6 +277,7 @@ def execute_task(task_id: str, *, lease_seconds: int = 900, crash_after_stage: s
                     "quality_status": result["quality_status"],
                     "segments": len(result["segments"]),
                     "quality_codes": sorted({item["code"] for item in result["quality"]}),
+                    "threshold_findings": len(result["threshold_findings"]),
                 },
             )
             if crash_after_stage == "spectrum":
@@ -308,6 +324,7 @@ def publish_report(db: Session, task: AnalysisTask, manifest: Manifest, calibrat
         task_id=task.id,
         manifest_id=manifest.id,
         calibration_version_id=calibration.id,
+        threshold_rule_set_id=task.threshold_rule_set_id,
         status="published" if result.get("quality_status") != "error" else "diagnostic_failed",
         result=result,
         snapshot_digest=result["snapshot_digest"],

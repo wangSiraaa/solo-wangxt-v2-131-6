@@ -69,7 +69,7 @@ def test_concurrent_finalization_succeeds_once(client: TestClient):
     upload_chunks(client, manifest["id"], chunks)
 
     def finalize(_):
-        return client.post(f"/manifests/{manifest['id']}/finalize").status_code
+        return client.post(f"/manifests/{manifest['id']}/finalize")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         responses = list(executor.map(finalize, range(8)))

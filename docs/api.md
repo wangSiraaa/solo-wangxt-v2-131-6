@@ -65,6 +65,36 @@
 
 新 active 版本会让使用旧 active 版本发布的报告进入 `needs_review`。
 
+## 阈值规则集（命名版本）
+
+实验室对 RMS、THD 和负序比例的复核阈值以命名规则集保存，同名重复创建自动递增版本。
+
+### `POST /threshold-rule-sets`
+
+```json
+{
+  "name": "lab-voltage",
+  "change_note": "2026Q4 复核限值",
+  "rules": [
+    {"metric": "rms", "channels": ["*"], "lower": 280, "upper": 320, "unit": "V"},
+    {"metric": "thd_percent", "channels": ["Va", "Vb", "Vc"], "upper": 8, "unit": "%"},
+    {"metric": "negative_sequence_percent", "channels": ["voltage"], "upper": 2, "unit": "%",
+     "sample_rate_min": 6000, "sample_rate_max": 6000}
+  ]
+}
+```
+
+- `metric`：`rms` / `thd_percent` / `negative_sequence_percent`。
+- `channels`：具体通道名或 `["*"]`；负序比例只接受 `voltage` / `current` / `*`。
+- `sample_rate_min/max`：可选，限定规则适用的固定采样率段。
+- `lower/upper`：至少给一个；`unit` 仅作展示。
+- 同名再次创建生成 `version+1`，旧版本置为 `superseded`；`(name, version)` 创建后不可变。
+- 非法规则（无上下限、上下限倒置、采样率段倒置、负序通道非法）返回 422。
+
+### `GET /threshold-rule-sets` / `GET /threshold-rule-sets/{id}`
+
+按名称与版本列出或读取单个版本。
+
 ## 任务与报告
 
 ### `POST /analysis-tasks`
@@ -73,12 +103,13 @@
 {
   "manifest_id": "...",
   "calibration_version_id": "...",
+  "threshold_rule_set_id": "...",
   "params": {"fundamental_hz": 50, "cycles_per_window": 6, "max_harmonic": 15},
   "idempotency_key": "lab-job-123"
 }
 ```
 
-创建时冻结清单、标定和参数。若使用 Celery，提交后自动发送 `run_analysis`；本地测试可调用 `/run`。
+创建时冻结清单、标定、参数和选定的阈值规则版本（`threshold_rule_set_id` 可空，空则不评估）。若使用 Celery，提交后自动发送 `run_analysis`；本地测试可调用 `/run`。
 
 ### 执行、重试、取消
 
@@ -94,3 +125,9 @@
 - `published`：正常发布；
 - `needs_review`：标定后来更新，需要复核；
 - `diagnostic_failed`：分析有 error 阶段，保留诊断但不是完成报告。
+
+报告体中的阈值越界提示：
+
+- `result.threshold_rule_set`：任务创建时冻结的规则集 `{id, name, version}`；完整规则文本在 `result.fixed_snapshot.threshold_rule_set.rules`。
+- `result.threshold_findings`：逐项越界提示，每项含 `rule_index`、`metric`、`channel`、`measured`、`unit`、`lower/upper`、`violation`（`above_upper`/`below_lower`）及来源段（`segment_index`、`sample_rate`、`source.start_sequence/end_sequence`）。
+- 提示仅辅助人工复核：不改变 `quality_status`，不修改已发布数值；缺失指标（如缺相时的负序比例、基波缺失时的 THD）跳过比较，绝不按 0 处理。规则集后续更新不影响旧报告，旧报告仍显示当时冻结的版本。

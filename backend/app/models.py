@@ -92,6 +92,21 @@ class CalibrationVersion(Base):
     activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class ThresholdRuleSet(Base):
+    __tablename__ = "threshold_rule_sets"
+    __table_args__ = (UniqueConstraint("name", "version", name="uq_threshold_rule_set_name_version"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    rules: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    change_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    supersedes_id: Mapped[str | None] = mapped_column(ForeignKey("threshold_rule_sets.id"), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="lab")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class AnalysisTask(Base):
     __tablename__ = "analysis_tasks"
     __table_args__ = (UniqueConstraint("idempotency_key", name="uq_analysis_idempotency_key"),)
@@ -99,6 +114,7 @@ class AnalysisTask(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     manifest_id: Mapped[str] = mapped_column(ForeignKey("manifests.id"), index=True, nullable=False)
     calibration_version_id: Mapped[str] = mapped_column(ForeignKey("calibration_versions.id"), nullable=False)
+    threshold_rule_set_id: Mapped[str | None] = mapped_column(ForeignKey("threshold_rule_sets.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", index=True)
     params: Mapped[dict] = mapped_column(JSON, nullable=False)
     manifest_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -121,12 +137,13 @@ class AnalysisTask(Base):
 
 class Report(Base):
     __tablename__ = "reports"
-    __table_args__ = (UniqueConstraint("task_id", name="uq_report_task"))
+    __table_args__ = (UniqueConstraint("task_id", name="uq_report_task"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     task_id: Mapped[str] = mapped_column(ForeignKey("analysis_tasks.id"), nullable=False)
     manifest_id: Mapped[str] = mapped_column(ForeignKey("manifests.id"), index=True, nullable=False)
     calibration_version_id: Mapped[str] = mapped_column(ForeignKey("calibration_versions.id"), nullable=False)
+    threshold_rule_set_id: Mapped[str | None] = mapped_column(ForeignKey("threshold_rule_sets.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="published", index=True)
     result: Mapped[dict] = mapped_column(JSON, nullable=False)
     snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)

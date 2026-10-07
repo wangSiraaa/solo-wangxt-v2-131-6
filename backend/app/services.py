@@ -6,7 +6,8 @@ from datetime import timezone
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from .models import AnalysisTask, CalibrationVersion, Manifest, Report
+from .models import AnalysisTask, CalibrationVersion, Manifest, Report, ThresholdRuleSet
+from .thresholds import validate_rules
 from .validation import canonical_json
 
 
@@ -73,7 +74,51 @@ def get_active_calibration(db: Session, channel_set_hash: str) -> CalibrationVer
     )
 
 
-def build_manifest_snapshot(manifest: Manifest, calibration: CalibrationVersion, params: dict) -> dict:
+def create_threshold_rule_set(
+    db: Session,
+    *,
+    name: str,
+    rules: list[dict],
+    change_note: str | None,
+    created_by: str,
+) -> ThresholdRuleSet:
+    """Append a new version of a named rule set.
+
+    Versions are server-assigned per name (latest + 1) so a (name, version)
+    pair is immutable once created. The previous active version is marked
+    superseded, but existing reports are deliberately left untouched: their
+    findings keep the rule version frozen at task creation time.
+    """
+
+    normalized = validate_rules(rules)
+    previous = db.scalar(
+        select(ThresholdRuleSet)
+        .where(ThresholdRuleSet.name == name)
+        .order_by(ThresholdRuleSet.version.desc())
+        .limit(1)
+    )
+    rule_set = ThresholdRuleSet(
+        name=name,
+        version=(previous.version + 1) if previous else 1,
+        status="active",
+        rules=normalized,
+        change_note=change_note,
+        supersedes_id=previous.id if previous else None,
+        created_by=created_by,
+    )
+    db.add(rule_set)
+    if previous is not None:
+        previous.status = "superseded"
+    db.flush()
+    return rule_set
+
+
+def build_manifest_snapshot(
+    manifest: Manifest,
+    calibration: CalibrationVersion,
+    params: dict,
+    threshold_rule_set: ThresholdRuleSet | None = None,
+) -> dict:
     expected = sorted(manifest.expected_chunks, key=lambda item: item["sequence"])
     return {
         "manifest_id": manifest.id,
@@ -84,6 +129,14 @@ def build_manifest_snapshot(manifest: Manifest, calibration: CalibrationVersion,
         "expected_chunks": expected,
         "calibration_version_id": calibration.id,
         "calibration_coefficients": calibration.coefficients,
+        "threshold_rule_set": {
+            "id": threshold_rule_set.id,
+            "name": threshold_rule_set.name,
+            "version": threshold_rule_set.version,
+            "rules": threshold_rule_set.rules,
+        }
+        if threshold_rule_set is not None
+        else None,
         "params": dict(params),
         "fixed_at": manifest.completed_at.astimezone(timezone.utc).isoformat()
         if manifest.completed_at
@@ -102,6 +155,7 @@ def create_analysis_task(
     calibration: CalibrationVersion,
     params: dict,
     idempotency_key: str | None,
+    threshold_rule_set: ThresholdRuleSet | None = None,
 ) -> AnalysisTask:
     if idempotency_key:
         existing = db.scalar(
@@ -110,10 +164,11 @@ def create_analysis_task(
         if existing is not None:
             return existing
 
-    snapshot = build_manifest_snapshot(manifest, calibration, params)
+    snapshot = build_manifest_snapshot(manifest, calibration, params, threshold_rule_set)
     task = AnalysisTask(
         manifest_id=manifest.id,
         calibration_version_id=calibration.id,
+        threshold_rule_set_id=threshold_rule_set.id if threshold_rule_set is not None else None,
         status="queued",
         params=dict(params),
         manifest_snapshot=snapshot,

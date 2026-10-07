@@ -87,6 +87,15 @@ def validate_declaration(expected_chunks: list[dict[str, Any]]) -> list[dict[str
     if [item["sequence"] for item in ordered] != list(range(len(ordered))):
         errors.append({"code": "sequence_not_contiguous", "message": "chunk sequences must be 0..N-1"})
 
+    for prev, item in zip(ordered, ordered[1:]):
+        if int(item["byte_offset"]) < int(prev["byte_offset"]) + int(prev["byte_length"]):
+            errors.append(
+                {
+                    "code": "byte_range_overlap",
+                    "sequences": [prev["sequence"], item["sequence"]],
+                }
+            )
+
     prev_end_offset = 0
     for item in ordered:
         if int(item["byte_offset"]) != prev_end_offset:
@@ -99,15 +108,6 @@ def validate_declaration(expected_chunks: list[dict[str, Any]]) -> list[dict[str
                 }
             )
         prev_end_offset = int(item["byte_offset"]) + int(item["byte_length"])
-
-    for prev, item in zip(ordered, ordered[1:]):
-        if int(item["byte_offset"]) < int(prev["byte_offset"]) + int(prev["byte_length"]):
-            errors.append(
-                {
-                    "code": "byte_range_overlap",
-                    "sequences": [prev["sequence"], item["sequence"]],
-                }
-            )
 
     for item in ordered:
         try:
@@ -256,11 +256,17 @@ def validate_received_chunks(db: Session, manifest: Manifest) -> tuple[bool, lis
                 )
             )
         try:
-            next_interval = (parse_time(item.end_time) - parse_time(item.start_time)).total_seconds() / max(
+            own_interval = (parse_time(item.end_time) - parse_time(item.start_time)).total_seconds() / max(
                 1, item.sample_count - 1
             )
+            prev_interval = 1.0 / float(prev.sample_rate)
             time_gap = (parse_time(item.start_time) - parse_time(prev.end_time)).total_seconds()
-            if abs(time_gap - next_interval) > TIME_TOLERANCE_SECONDS:
+            # At a sample-rate boundary either side's clock may define the gap;
+            # mirror the declaration check and accept both.
+            if (
+                abs(time_gap - prev_interval) > TIME_TOLERANCE_SECONDS
+                and abs(time_gap - own_interval) > TIME_TOLERANCE_SECONDS
+            ):
                 issues.append(
                     add_issue(
                         db,
@@ -269,7 +275,7 @@ def validate_received_chunks(db: Session, manifest: Manifest) -> tuple[bool, lis
                         "sample_time_discontinuous",
                         "received chunks do not form one continuous sample timeline",
                         sequences=[prev.sequence, item.sequence],
-                        gap_seconds=time_gap - next_interval,
+                        gap_seconds=time_gap - prev_interval,
                     )
                 )
         except ValueError:

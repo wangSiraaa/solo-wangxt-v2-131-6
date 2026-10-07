@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..dsp import default_params
-from ..models import AnalysisTask, CalibrationVersion, Manifest, Report
+from ..models import AnalysisTask, CalibrationVersion, Manifest, Report, ThresholdRuleSet
 from ..pipeline import execute_task, recover_stale_tasks, request_cancel, request_retry
 from ..schemas import (
     AnalysisCreate,
@@ -15,8 +15,15 @@ from ..schemas import (
     ReportOut,
     RetryOut,
     TaskOut,
+    ThresholdRuleSetCreate,
+    ThresholdRuleSetOut,
 )
-from ..services import create_analysis_task, create_calibration, get_active_calibration
+from ..services import (
+    create_analysis_task,
+    create_calibration,
+    create_threshold_rule_set,
+    get_active_calibration,
+)
 
 router = APIRouter(tags=["analysis"])
 
@@ -34,6 +41,8 @@ def post_calibration(payload: CalibrationCreate, db: Session = Depends(get_db)):
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    db.commit()
+    db.refresh(version)
     return version
 
 
@@ -53,6 +62,39 @@ def get_calibration(version_id: str, db: Session = Depends(get_db)):
     return version
 
 
+@router.post("/threshold-rule-sets", response_model=ThresholdRuleSetOut, status_code=201)
+def post_threshold_rule_set(payload: ThresholdRuleSetCreate, db: Session = Depends(get_db)):
+    try:
+        rule_set = create_threshold_rule_set(
+            db,
+            name=payload.name,
+            rules=[rule.model_dump() for rule in payload.rules],
+            change_note=payload.change_note,
+            created_by=payload.created_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    db.commit()
+    db.refresh(rule_set)
+    return rule_set
+
+
+@router.get("/threshold-rule-sets", response_model=list[ThresholdRuleSetOut])
+def list_threshold_rule_sets(name: str | None = None, db: Session = Depends(get_db)):
+    stmt = select(ThresholdRuleSet).order_by(ThresholdRuleSet.name, ThresholdRuleSet.version.desc())
+    if name:
+        stmt = stmt.where(ThresholdRuleSet.name == name)
+    return db.scalars(stmt).all()
+
+
+@router.get("/threshold-rule-sets/{rule_set_id}", response_model=ThresholdRuleSetOut)
+def get_threshold_rule_set(rule_set_id: str, db: Session = Depends(get_db)):
+    rule_set = db.get(ThresholdRuleSet, rule_set_id)
+    if rule_set is None:
+        raise HTTPException(404, "threshold rule set not found")
+    return rule_set
+
+
 @router.post("/analysis-tasks", response_model=TaskOut, status_code=201)
 def post_analysis(payload: AnalysisCreate, db: Session = Depends(get_db)):
     manifest = db.get(Manifest, payload.manifest_id)
@@ -68,6 +110,12 @@ def post_analysis(payload: AnalysisCreate, db: Session = Depends(get_db)):
     if calibration is None:
         raise HTTPException(422, "no calibration version specified or active for channel set")
 
+    threshold_rule_set = None
+    if payload.threshold_rule_set_id:
+        threshold_rule_set = db.get(ThresholdRuleSet, payload.threshold_rule_set_id)
+        if threshold_rule_set is None:
+            raise HTTPException(422, "specified threshold rule set version does not exist")
+
     params = {**default_params(), **payload.params}
     task = create_analysis_task(
         db,
@@ -75,6 +123,7 @@ def post_analysis(payload: AnalysisCreate, db: Session = Depends(get_db)):
         calibration=calibration,
         params=params,
         idempotency_key=payload.idempotency_key,
+        threshold_rule_set=threshold_rule_set,
     )
     db.commit()
     db.refresh(task)

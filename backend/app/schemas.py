@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from .thresholds import SEQUENCE_GROUPS
 
 
 class ExpectedChunkIn(BaseModel):
@@ -104,9 +106,59 @@ class CalibrationOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ThresholdRule(BaseModel):
+    metric: Literal["rms", "thd_percent", "negative_sequence_percent"]
+    channels: list[str] = Field(min_length=1)
+    sample_rate_min: float | None = Field(default=None, gt=0)
+    sample_rate_max: float | None = Field(default=None, gt=0)
+    lower: float | None = None
+    upper: float | None = None
+    unit: str = ""
+    note: str | None = None
+
+    @model_validator(mode="after")
+    def check_rule(self) -> "ThresholdRule":
+        if self.lower is None and self.upper is None:
+            raise ValueError("at least one of lower/upper is required")
+        if self.lower is not None and self.upper is not None and self.lower > self.upper:
+            raise ValueError("lower must not exceed upper")
+        if self.sample_rate_min is not None and self.sample_rate_max is not None:
+            if self.sample_rate_min > self.sample_rate_max:
+                raise ValueError("sample_rate_min must not exceed sample_rate_max")
+        if "*" in self.channels and len(self.channels) > 1:
+            raise ValueError("'*' must not be mixed with explicit channel names")
+        if self.metric == "negative_sequence_percent":
+            invalid = [c for c in self.channels if c != "*" and c not in SEQUENCE_GROUPS]
+            if invalid:
+                raise ValueError(f"negative_sequence_percent applies to {list(SEQUENCE_GROUPS)} groups, got {invalid}")
+        return self
+
+
+class ThresholdRuleSetCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    rules: list[ThresholdRule] = Field(min_length=1)
+    change_note: str | None = None
+    created_by: str = "lab"
+
+
+class ThresholdRuleSetOut(BaseModel):
+    id: str
+    name: str
+    version: int
+    status: str
+    rules: list[dict[str, Any]]
+    change_note: str | None
+    supersedes_id: str | None
+    created_by: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class AnalysisCreate(BaseModel):
     manifest_id: str
     calibration_version_id: str | None = None
+    threshold_rule_set_id: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = None
 
@@ -115,6 +167,7 @@ class TaskOut(BaseModel):
     id: str
     manifest_id: str
     calibration_version_id: str
+    threshold_rule_set_id: str | None
     status: str
     params: dict[str, Any]
     manifest_snapshot: dict[str, Any]
@@ -139,6 +192,7 @@ class ReportOut(BaseModel):
     task_id: str
     manifest_id: str
     calibration_version_id: str
+    threshold_rule_set_id: str | None
     status: str
     result: dict[str, Any]
     snapshot_digest: str

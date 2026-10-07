@@ -24,11 +24,18 @@ export const api = {
   },
   calibrations: (channelSetHash) =>
     request(`/calibrations${channelSetHash ? `?channel_set_hash=${encodeURIComponent(channelSetHash)}` : ''}`),
+  thresholdRuleSets: () => request('/threshold-rule-sets'),
+  createThresholdRuleSet: (payload) =>
+    request('/threshold-rule-sets', { method: 'POST', body: JSON.stringify(payload) }),
   tasks: (manifestId) => request(`/analysis-tasks?manifest_id=${encodeURIComponent(manifestId)}`),
-  createTask: (manifestId, calibrationVersionId) =>
+  createTask: (manifestId, calibrationVersionId, thresholdRuleSetId) =>
     request('/analysis-tasks', {
       method: 'POST',
-      body: JSON.stringify({ manifest_id: manifestId, calibration_version_id: calibrationVersionId })
+      body: JSON.stringify({
+        manifest_id: manifestId,
+        calibration_version_id: calibrationVersionId,
+        threshold_rule_set_id: thresholdRuleSetId || null
+      })
     }),
   runTask: (id) => request(`/analysis-tasks/${id}/run`, { method: 'POST' }),
   cancelTask: (id) => request(`/analysis-tasks/${id}/cancel`, { method: 'POST' }),
