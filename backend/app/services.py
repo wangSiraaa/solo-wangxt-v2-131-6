@@ -6,7 +6,7 @@ from datetime import timezone
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from .models import AnalysisTask, CalibrationVersion, Manifest, Report
+from .models import AnalysisTask, CalibrationVersion, Manifest, Report, ThresholdVersion
 from .validation import canonical_json
 
 
@@ -73,7 +73,79 @@ def get_active_calibration(db: Session, channel_set_hash: str) -> CalibrationVer
     )
 
 
-def build_manifest_snapshot(manifest: Manifest, calibration: CalibrationVersion, params: dict) -> dict:
+def threshold_rules_to_json(rules: list) -> list[dict]:
+    normalized: list[dict] = []
+    for index, rule in enumerate(rules, start=1):
+        value = rule.model_dump() if hasattr(rule, "model_dump") else dict(rule)
+        value = {"id": f"rule-{index}", **value}
+        channels = list(dict.fromkeys(str(channel) for channel in value["channels"]))
+        if not channels:
+            raise ValueError("threshold rule channels must not be empty")
+        value["channels"] = channels
+        normalized.append(value)
+    return normalized
+
+
+def create_threshold_version(
+    db: Session,
+    *,
+    name: str,
+    channel_set_hash: str,
+    rules: list,
+    change_note: str | None,
+    created_by: str,
+) -> ThresholdVersion:
+    normalized_rules = threshold_rules_to_json(rules)
+    if not normalized_rules:
+        raise ValueError("threshold rules must not be empty")
+    previous = db.scalar(
+        select(ThresholdVersion)
+        .where(
+            ThresholdVersion.channel_set_hash == channel_set_hash,
+            ThresholdVersion.name == name,
+            ThresholdVersion.status == "active",
+        )
+        .order_by(ThresholdVersion.activated_at.desc(), ThresholdVersion.created_at.desc())
+        .limit(1)
+    )
+    version = ThresholdVersion(
+        name=name,
+        channel_set_hash=channel_set_hash,
+        status="active",
+        rules=normalized_rules,
+        change_note=change_note,
+        supersedes_id=previous.id if previous else None,
+        created_by=created_by,
+    )
+    db.add(version)
+    # Unlike calibration revisions, advisory threshold changes must not alter
+    # the quality/review state or values of an already published report.
+    if previous is not None:
+        previous.status = "superseded"
+    db.flush()
+    return version
+
+
+def build_threshold_snapshot(threshold: ThresholdVersion) -> dict:
+    return {
+        "id": threshold.id,
+        "name": threshold.name,
+        "channel_set_hash": threshold.channel_set_hash,
+        "status": threshold.status,
+        "rules": [dict(rule) for rule in threshold.rules],
+        "change_note": threshold.change_note,
+        "supersedes_id": threshold.supersedes_id,
+        "created_by": threshold.created_by,
+        "activated_at": threshold.activated_at.astimezone(timezone.utc).isoformat(),
+    }
+
+
+def build_manifest_snapshot(
+    manifest: Manifest,
+    calibration: CalibrationVersion,
+    params: dict,
+    threshold: ThresholdVersion | None = None,
+) -> dict:
     expected = sorted(manifest.expected_chunks, key=lambda item: item["sequence"])
     return {
         "manifest_id": manifest.id,
@@ -84,6 +156,8 @@ def build_manifest_snapshot(manifest: Manifest, calibration: CalibrationVersion,
         "expected_chunks": expected,
         "calibration_version_id": calibration.id,
         "calibration_coefficients": calibration.coefficients,
+        "threshold_version_id": threshold.id if threshold else None,
+        "threshold_rules_snapshot": build_threshold_snapshot(threshold) if threshold else None,
         "params": dict(params),
         "fixed_at": manifest.completed_at.astimezone(timezone.utc).isoformat()
         if manifest.completed_at
@@ -102,6 +176,7 @@ def create_analysis_task(
     calibration: CalibrationVersion,
     params: dict,
     idempotency_key: str | None,
+    threshold: ThresholdVersion | None = None,
 ) -> AnalysisTask:
     if idempotency_key:
         existing = db.scalar(
@@ -110,10 +185,11 @@ def create_analysis_task(
         if existing is not None:
             return existing
 
-    snapshot = build_manifest_snapshot(manifest, calibration, params)
+    snapshot = build_manifest_snapshot(manifest, calibration, params, threshold)
     task = AnalysisTask(
         manifest_id=manifest.id,
         calibration_version_id=calibration.id,
+        threshold_version_id=threshold.id if threshold else None,
         status="queued",
         params=dict(params),
         manifest_snapshot=snapshot,

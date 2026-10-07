@@ -92,6 +92,21 @@ class CalibrationVersion(Base):
     activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class ThresholdVersion(Base):
+    __tablename__ = "threshold_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    channel_set_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    rules: Mapped[list] = mapped_column(JSON, nullable=False)
+    change_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    supersedes_id: Mapped[str | None] = mapped_column(ForeignKey("threshold_versions.id"), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="lab")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class AnalysisTask(Base):
     __tablename__ = "analysis_tasks"
     __table_args__ = (UniqueConstraint("idempotency_key", name="uq_analysis_idempotency_key"),)
@@ -99,6 +114,9 @@ class AnalysisTask(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     manifest_id: Mapped[str] = mapped_column(ForeignKey("manifests.id"), index=True, nullable=False)
     calibration_version_id: Mapped[str] = mapped_column(ForeignKey("calibration_versions.id"), nullable=False)
+    threshold_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("threshold_versions.id"), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", index=True)
     params: Mapped[dict] = mapped_column(JSON, nullable=False)
     manifest_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -127,6 +145,9 @@ class Report(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey("analysis_tasks.id"), nullable=False)
     manifest_id: Mapped[str] = mapped_column(ForeignKey("manifests.id"), index=True, nullable=False)
     calibration_version_id: Mapped[str] = mapped_column(ForeignKey("calibration_versions.id"), nullable=False)
+    threshold_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("threshold_versions.id"), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="published", index=True)
     result: Mapped[dict] = mapped_column(JSON, nullable=False)
     snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)

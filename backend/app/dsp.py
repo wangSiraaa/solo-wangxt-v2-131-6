@@ -406,7 +406,16 @@ def aggregate_mean(values: list[float | None]) -> float | None:
     return float(np.mean(clean))
 
 
-def analyze_segment(data: np.ndarray, channels: list[str], fs: float, coefficients: dict, params: dict) -> dict[str, Any]:
+def analyze_segment(
+    data: np.ndarray,
+    channels: list[str],
+    fs: float,
+    coefficients: dict,
+    params: dict,
+    *,
+    start_sequence: int = 0,
+    end_sequence: int = 0,
+) -> dict[str, Any]:
     cycles = int(params["cycles_per_window"])
     f0 = float(params["fundamental_hz"])
     window = int(round(cycles * fs / f0))
@@ -513,6 +522,8 @@ def analyze_segment(data: np.ndarray, channels: list[str], fs: float, coefficien
     return {
         "sample_rate": fs,
         "samples": int(data.shape[0]),
+        "start_sequence": int(start_sequence),
+        "end_sequence": int(end_sequence),
         "channels": channel_results,
         "symmetrical_components": sequence_results,
         "quality": quality,
@@ -538,7 +549,15 @@ def analyze_all_segments(
     results = []
     quality: list[dict[str, Any]] = []
     for segment in segments:
-        result = analyze_segment(segment["data"], segment["channels"], segment["sample_rate"], coefficients, params)
+        result = analyze_segment(
+            segment["data"],
+            segment["channels"],
+            segment["sample_rate"],
+            coefficients,
+            params,
+            start_sequence=segment.get("start_sequence", 0),
+            end_sequence=segment.get("end_sequence", 0),
+        )
         results.append(result)
         quality.extend(result["quality"])
     if sample_rate_changed and len(segments) > 1:

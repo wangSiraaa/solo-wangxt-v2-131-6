@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..dsp import default_params
-from ..models import AnalysisTask, CalibrationVersion, Manifest, Report
+from ..models import AnalysisTask, CalibrationVersion, Manifest, Report, ThresholdVersion
 from ..pipeline import execute_task, recover_stale_tasks, request_cancel, request_retry
 from ..schemas import (
     AnalysisCreate,
@@ -15,8 +15,15 @@ from ..schemas import (
     ReportOut,
     RetryOut,
     TaskOut,
+    ThresholdVersionCreate,
+    ThresholdVersionOut,
 )
-from ..services import create_analysis_task, create_calibration, get_active_calibration
+from ..services import (
+    create_analysis_task,
+    create_calibration,
+    create_threshold_version,
+    get_active_calibration,
+)
 
 router = APIRouter(tags=["analysis"])
 
@@ -53,6 +60,48 @@ def get_calibration(version_id: str, db: Session = Depends(get_db)):
     return version
 
 
+@router.post("/threshold-versions", response_model=ThresholdVersionOut, status_code=201)
+def post_threshold_version(payload: ThresholdVersionCreate, db: Session = Depends(get_db)):
+    try:
+        version = create_threshold_version(
+            db,
+            name=payload.name,
+            channel_set_hash=payload.channel_set_hash,
+            rules=payload.rules,
+            change_note=payload.change_note,
+            created_by=payload.created_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    db.commit()
+    db.refresh(version)
+    return version
+
+
+@router.get("/threshold-versions", response_model=list[ThresholdVersionOut])
+def list_threshold_versions(
+    channel_set_hash: str | None = None,
+    name: str | None = None,
+    db: Session = Depends(get_db),
+):
+    stmt = select(ThresholdVersion).order_by(
+        ThresholdVersion.name.asc(), ThresholdVersion.created_at.desc()
+    )
+    if channel_set_hash:
+        stmt = stmt.where(ThresholdVersion.channel_set_hash == channel_set_hash)
+    if name:
+        stmt = stmt.where(ThresholdVersion.name == name)
+    return db.scalars(stmt).all()
+
+
+@router.get("/threshold-versions/{version_id}", response_model=ThresholdVersionOut)
+def get_threshold_version(version_id: str, db: Session = Depends(get_db)):
+    version = db.get(ThresholdVersion, version_id)
+    if version is None:
+        raise HTTPException(404, "threshold version not found")
+    return version
+
+
 @router.post("/analysis-tasks", response_model=TaskOut, status_code=201)
 def post_analysis(payload: AnalysisCreate, db: Session = Depends(get_db)):
     manifest = db.get(Manifest, payload.manifest_id)
@@ -67,6 +116,16 @@ def post_analysis(payload: AnalysisCreate, db: Session = Depends(get_db)):
         calibration = get_active_calibration(db, manifest.channel_set_hash)
     if calibration is None:
         raise HTTPException(422, "no calibration version specified or active for channel set")
+    if calibration.channel_set_hash != manifest.channel_set_hash:
+        raise HTTPException(422, "selected calibration does not belong to this channel set")
+
+    threshold = None
+    if payload.threshold_version_id:
+        threshold = db.get(ThresholdVersion, payload.threshold_version_id)
+        if threshold is None:
+            raise HTTPException(422, "selected threshold version does not exist")
+        if threshold.channel_set_hash != manifest.channel_set_hash:
+            raise HTTPException(422, "selected threshold version does not belong to this channel set")
 
     params = {**default_params(), **payload.params}
     task = create_analysis_task(
@@ -75,6 +134,7 @@ def post_analysis(payload: AnalysisCreate, db: Session = Depends(get_db)):
         calibration=calibration,
         params=params,
         idempotency_key=payload.idempotency_key,
+        threshold=threshold,
     )
     db.commit()
     db.refresh(task)

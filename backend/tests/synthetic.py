@@ -8,17 +8,28 @@ import numpy as np
 CHANNELS = ["Va", "Vb", "Vc"]
 
 
-def phase_waveforms(n: int, fs: float = 6000.0, fundamental: float = 50.0, reversed_a: bool = False, saturation: bool = False, channels=None):
+def phase_waveforms(
+    n: int,
+    fs: float = 6000.0,
+    fundamental: float = 50.0,
+    reversed_a: bool = False,
+    saturation: bool = False,
+    zero: bool = False,
+    channels=None,
+):
     channels = channels or CHANNELS
     t = np.arange(n, dtype=np.float64) / fs
     va_amp = -np.sqrt(2.0) * 300.0 if reversed_a else np.sqrt(2.0) * 300.0
-    source = {
-        "Va": va_amp * np.cos(2 * np.pi * fundamental * t)
-        + np.sqrt(2.0) * 10.0 * np.cos(2 * np.pi * 3 * fundamental * t)
-        + np.sqrt(2.0) * 20.0 * np.cos(2 * np.pi * 5 * fundamental * t),
-        "Vb": np.sqrt(2.0) * 300.0 * np.cos(2 * np.pi * fundamental * t - 2 * np.pi / 3),
-        "Vc": np.sqrt(2.0) * 300.0 * np.cos(2 * np.pi * fundamental * t + 2 * np.pi / 3),
-    }
+    if zero:
+        source = {channel: np.zeros(n) for channel in ("Va", "Vb", "Vc")}
+    else:
+        source = {
+            "Va": va_amp * np.cos(2 * np.pi * fundamental * t)
+            + np.sqrt(2.0) * 10.0 * np.cos(2 * np.pi * 3 * fundamental * t)
+            + np.sqrt(2.0) * 20.0 * np.cos(2 * np.pi * 5 * fundamental * t),
+            "Vb": np.sqrt(2.0) * 300.0 * np.cos(2 * np.pi * fundamental * t - 2 * np.pi / 3),
+            "Vc": np.sqrt(2.0) * 300.0 * np.cos(2 * np.pi * fundamental * t + 2 * np.pi / 3),
+        }
     if saturation:
         source["Va"] = np.clip(source["Va"], -400, 400)
     values = np.column_stack([source[channel] for channel in channels]).astype("<f4")
@@ -59,8 +70,8 @@ def make_chunks(sample_chunks=(300, 420), fs: float = 6000.0, channels=None, **w
 
 
 def make_rate_change_chunks():
-    first = make_chunks(sample_chunks=(300,), fs=6000.0)[0]
-    second_values = phase_waveforms(420, fs=7000.0)
+    first = make_chunks(sample_chunks=(720,), fs=6000.0)[0]
+    second_values = phase_waveforms(840, fs=7000.0)
     raw = second_values.tobytes()
     start = datetime.fromisoformat(first["end_time"]) + timedelta(seconds=1 / 6000.0)
     second = {

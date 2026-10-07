@@ -104,9 +104,64 @@ class CalibrationOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ThresholdRuleIn(BaseModel):
+    metric: Literal["rms", "thd", "negative_sequence_ratio"]
+    channels: list[str]
+    min_sample_rate_hz: float | None = Field(default=None, ge=0)
+    max_sample_rate_hz: float | None = Field(default=None, ge=0)
+    lower_limit: float | None = None
+    upper_limit: float | None = None
+    unit: str = Field(min_length=1)
+
+    def model_post_init(self, __context: Any) -> None:
+        channels = [channel.strip() for channel in self.channels if channel.strip()]
+        if not channels:
+            raise ValueError("threshold rule channels must not be empty")
+        if len(channels) != len(set(channels)):
+            raise ValueError("threshold rule channels must not contain duplicates")
+        self.channels = channels
+        self.unit = self.unit.strip()
+        if not self.unit:
+            raise ValueError("threshold unit must not be empty")
+        if self.metric == "negative_sequence_ratio" and not set(channels) <= {"voltage", "current"}:
+            raise ValueError("negative_sequence_ratio channels must be voltage and/or current")
+        if self.lower_limit is None and self.upper_limit is None:
+            raise ValueError("threshold rule must define at least one limit")
+        if self.min_sample_rate_hz is not None and self.max_sample_rate_hz is not None:
+            if self.min_sample_rate_hz > self.max_sample_rate_hz:
+                raise ValueError("min_sample_rate_hz cannot exceed max_sample_rate_hz")
+        if self.lower_limit is not None and self.upper_limit is not None:
+            if self.lower_limit > self.upper_limit:
+                raise ValueError("lower_limit cannot exceed upper_limit")
+
+
+class ThresholdVersionCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    channel_set_hash: str = Field(min_length=64, max_length=64)
+    rules: list[ThresholdRuleIn]
+    change_note: str | None = None
+    created_by: str = "lab"
+
+
+class ThresholdVersionOut(BaseModel):
+    id: str
+    name: str
+    channel_set_hash: str
+    status: str
+    rules: list[dict[str, Any]]
+    change_note: str | None
+    supersedes_id: str | None
+    created_by: str
+    created_at: datetime
+    activated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class AnalysisCreate(BaseModel):
     manifest_id: str
     calibration_version_id: str | None = None
+    threshold_version_id: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = None
 
@@ -115,6 +170,7 @@ class TaskOut(BaseModel):
     id: str
     manifest_id: str
     calibration_version_id: str
+    threshold_version_id: str | None
     status: str
     params: dict[str, Any]
     manifest_snapshot: dict[str, Any]
@@ -139,6 +195,7 @@ class ReportOut(BaseModel):
     task_id: str
     manifest_id: str
     calibration_version_id: str
+    threshold_version_id: str | None
     status: str
     result: dict[str, Any]
     snapshot_digest: str

@@ -59,16 +59,25 @@
               </option>
             </select>
           </label>
+          <label style="margin-left:12px">命名复核阈值：
+            <select v-model="selectedThresholdId" style="max-width:360px">
+              <option value="">不启用辅助阈值</option>
+              <option v-for="t in thresholds" :key="t.id" :value="t.id">
+                {{ t.name }} · {{ short(t.id) }} · {{ t.status }} · {{ t.change_note || '初始版本' }}
+              </option>
+            </select>
+          </label>
           <button @click="createTask" :disabled="!selectedCalibrationId">创建/入队</button>
         </div>
         <table>
-          <thead><tr><th>任务</th><th>状态</th><th>标定</th><th>尝试</th><th>阶段</th><th>操作</th></tr></thead>
+          <thead><tr><th>任务</th><th>状态</th><th>标定</th><th>阈值</th><th>尝试</th><th>阶段</th><th>操作</th></tr></thead>
           <tbody>
             <tr v-for="task in tasks" :key="task.id">
               <td>{{ short(task.id) }}</td>
               <td><span class="badge" :class="task.status">{{ task.status }}</span>
                 <div v-if="task.cancellation_requested" class="meta">取消请求中</div></td>
               <td>{{ short(task.calibration_version_id) }}</td>
+              <td>{{ task.threshold_version_id ? short(task.threshold_version_id) : '—' }}</td>
               <td>{{ task.attempts }}</td>
               <td class="meta">{{ Object.keys(task.stage_results || {}).join(' → ') }}</td>
               <td>
@@ -82,12 +91,20 @@
 
         <h3>报告</h3>
         <template v-if="reports.length">
+          <label style="display:block;margin-bottom:10px">查看报告：
+            <select v-model="reportId" @change="report = reports.find((item) => item.id === reportId) || null" style="max-width:520px">
+              <option v-for="item in reports" :key="item.id" :value="item.id">
+                {{ short(item.id) }} · {{ item.status }} · {{ item.result?.threshold_review?.version_name || '未启用阈值' }}
+              </option>
+            </select>
+          </label>
           <div class="grid" style="margin-bottom:12px">
             <div class="metric"><span>状态</span><strong><span class="badge" :class="report.status">{{ report.status }}</span></strong></div>
             <div class="metric"><span>A 相 RMS</span><strong>{{ metric('Va')?.rms?.toFixed(4) ?? '—' }}</strong></div>
             <div class="metric"><span>A 相 THD</span><strong>{{ metric('Va')?.thd_percent?.toFixed(3) ?? '—' }}%</strong></div>
           </div>
           <p class="meta" v-if="report.review_reason">{{ report.review_reason }}</p>
+          <ThresholdReview :report="report" />
           <SpectrumChart :report="report" />
           <SequenceTable :report="report" />
           <pre>{{ JSON.stringify(qualitySummary, null, 2) }}</pre>
@@ -111,7 +128,9 @@ const chunks = ref([])
 const issues = ref([])
 const preview = ref({ segments: [] })
 const calibrations = ref([])
+const thresholds = ref([])
 const selectedCalibrationId = ref('')
+const selectedThresholdId = ref('')
 const tasks = ref([])
 const reports = ref([])
 const reportId = ref(null)
@@ -149,17 +168,20 @@ async function loadDetail() {
   preview.value = previewData || { segments: [] }
   tasks.value = taskList || []
   reports.value = reportList || []
-  const chosen = reports.value.find((item) => item.status === 'published') || reports.value[0]
+  const selected = reports.value.find((item) => item.id === reportId.value)
+  const chosen = selected || reports.value.find((item) => item.status === 'published') || reports.value[0]
   reportId.value = chosen?.id || null
   report.value = chosen || null
   const calList = await unwrap(api.calibrations(manifest.value.channel_set_hash))
   calibrations.value = calList || []
+  const thresholdList = await unwrap(api.thresholds(manifest.value.channel_set_hash))
+  thresholds.value = thresholdList || []
   if (!selectedCalibrationId.value) {
     selectedCalibrationId.value = calibrations.value.find((item) => item.status === 'active')?.id || calibrations.value[0]?.id || ''
   }
 }
 async function createTask() {
-  await api.createTask(selectedId.value, selectedCalibrationId.value)
+  await api.createTask(selectedId.value, selectedCalibrationId.value, selectedThresholdId.value)
   await loadDetail()
 }
 async function run(id) { await api.runTask(id); await loadDetail() }
@@ -312,6 +334,75 @@ const SequenceTable = {
   },
   template: `<table v-if="rows.length"><thead><tr><th>分量</th><th>RMS</th><th>相位°</th><th>峰值相量</th></tr></thead>
     <tbody><tr v-for="r in rows" :key="r.name"><td>{{r.name}}</td><td>{{r.rms.toFixed(5)}}</td><td>{{r.phase.toFixed(3)}}</td><td>{{r.phasor}}</td></tr></tbody></table>`
+}
+
+const ThresholdReview = {
+  props: ['report'],
+  setup(props) {
+    const review = computed(() => props.report?.result?.threshold_review || null)
+    const short = (value) => value ? `${String(value).slice(0, 8)}…` : '—'
+    const formatLimit = (item) => {
+      const lower = item.lower_limit === null || item.lower_limit === undefined ? '−∞' : Number(item.lower_limit).toFixed(4)
+      const upper = item.upper_limit === null || item.upper_limit === undefined ? '+∞' : Number(item.upper_limit).toFixed(4)
+      return `[${lower}, ${upper}] ${item.unit}`
+    }
+    const formatSource = (source) => {
+      const parts = [
+        `段 ${source.segment_index}`,
+        `${Number(source.sample_rate_hz).toFixed(0)} Hz`,
+        `块 ${source.start_sequence}-${source.end_sequence}`
+      ]
+      if (source.window_index !== undefined) parts.push(`窗口 ${source.window_index}`)
+      return parts.join(' · ')
+    }
+    const violationText = {
+      below_lower_limit: '低于下限',
+      above_upper_limit: '高于上限'
+    }
+    return { review, short, formatLimit, formatSource, violationText }
+  },
+  template: `
+    <section v-if="review && review.applied" class="threshold-review">
+      <h3>实验室复核阈值提示（辅助人工）</h3>
+      <div class="threshold-head">
+        <strong>{{ review.version_name }}</strong>
+        <span class="badge warning">{{ review.status }}</span>
+        <span>{{ short(review.version_id) }}</span>
+        <span>{{ review.violation_count }} 项越界 / {{ review.evaluated_count }} 项已比较</span>
+      </div>
+      <p class="meta">提示不会改变原质量状态，也不会修改报告数值；缺失指标已跳过，未按零比较。</p>
+      <table v-if="review.violations.length">
+        <thead><tr><th>指标</th><th>适用项</th><th>规则限值</th><th>实测值</th><th>越界</th><th>来源段</th></tr></thead>
+        <tbody>
+          <tr v-for="(item, index) in review.violations" :key="index" class="threshold-violation">
+            <td>{{ item.metric_label }}</td>
+            <td>{{ item.channel }}<span v-if="item.phase"> / {{ item.phase }}</span></td>
+            <td>{{ formatLimit(item) }}</td>
+            <td>{{ Number(item.measured_value).toFixed(5) }} {{ item.unit }}</td>
+            <td>{{ violationText[item.violation] || item.violation }}</td>
+            <td class="meta">{{ formatSource(item.source) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else-if="review.evaluated_count > 0" class="meta">该冻结版本未发现越界项。</p>
+      <p v-else class="meta">该报告没有可用于这些规则的非空指标；缺失项均未按零比较。</p>
+      <details>
+        <summary>查看冻结的规则定义</summary>
+        <table>
+          <thead><tr><th>规则</th><th>指标</th><th>通道/分量</th><th>采样率段 Hz</th><th>限值</th></tr></thead>
+          <tbody>
+            <tr v-for="rule in review.rules" :key="rule.id">
+              <td>{{ rule.id }}</td>
+              <td>{{ rule.metric }}</td>
+              <td>{{ rule.channels.join(', ') }}</td>
+              <td>{{ rule.min_sample_rate_hz ?? '−∞' }} — {{ rule.max_sample_rate_hz ?? '+∞' }}</td>
+              <td>{{ formatLimit(rule) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </details>
+    </section>
+  `
 }
 
 onMounted(async () => { await refreshAll(); timer.value = setInterval(loadDetail, 4000) })

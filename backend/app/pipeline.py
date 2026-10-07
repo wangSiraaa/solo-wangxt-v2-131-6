@@ -16,6 +16,7 @@ from .dsp import analyze_all_segments, group_chunks_by_rate
 from .models import AnalysisTask, CalibrationVersion, Chunk, Manifest, Report, utcnow
 from .services import snapshot_digest
 from .storage import get_object_store
+from .thresholds import empty_threshold_review, evaluate_thresholds
 
 WORKER_ID = os.environ.get("PQ_WORKER_ID", f"worker-{uuid.uuid4().hex[:8]}")
 
@@ -254,6 +255,12 @@ def execute_task(task_id: str, *, lease_seconds: int = 900, crash_after_stage: s
                 params,
                 sample_rate_changed=len({segment["sample_rate"] for segment in segments}) > 1,
             )
+            threshold_snapshot = snapshot.get("threshold_rules_snapshot")
+            result["threshold_review"] = (
+                evaluate_thresholds(result, threshold_snapshot)
+                if threshold_snapshot
+                else empty_threshold_review()
+            )
             save_stage(
                 db,
                 task,
@@ -269,7 +276,7 @@ def execute_task(task_id: str, *, lease_seconds: int = 900, crash_after_stage: s
 
             result["fixed_snapshot"] = snapshot
             result["snapshot_digest"] = snapshot_digest(snapshot)
-            published = publish_report(db, task, manifest, calibration, result)
+            published = publish_report(db, task, manifest, calibration, result, task.threshold_version_id)
 
             for segment in segments:
                 segment["data"]._mmap.close()
@@ -297,7 +304,14 @@ def execute_task(task_id: str, *, lease_seconds: int = 900, crash_after_stage: s
         db.close()
 
 
-def publish_report(db: Session, task: AnalysisTask, manifest: Manifest, calibration, result: dict) -> bool:
+def publish_report(
+    db: Session,
+    task: AnalysisTask,
+    manifest: Manifest,
+    calibration,
+    result: dict,
+    threshold_version_id: str | None,
+) -> bool:
     # The unique constraint on task_id and this existence check make duplicate
     # publication impossible even if a worker retries a commit timeout.
     existing = db.scalar(select(Report).where(Report.task_id == task.id).limit(1))
@@ -308,6 +322,7 @@ def publish_report(db: Session, task: AnalysisTask, manifest: Manifest, calibrat
         task_id=task.id,
         manifest_id=manifest.id,
         calibration_version_id=calibration.id,
+        threshold_version_id=threshold_version_id,
         status="published" if result.get("quality_status") != "error" else "diagnostic_failed",
         result=result,
         snapshot_digest=result["snapshot_digest"],

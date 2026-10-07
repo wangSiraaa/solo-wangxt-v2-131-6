@@ -51,6 +51,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .issue { border-left: 4px solid #f0a; padding: 8px 10px; margin: 7px 0; background: #fbfcfe; }
 .issue.error { border-color: #d8274f; }
 .issue.warning { border-color: #e99b1c; }
+.threshold-review { margin: 14px 0; padding: 12px; border: 1px solid #ead7b0; border-radius: 10px; background: #fffaf0; }
+.threshold-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.threshold-violation td { background: #fff7e8; }
+.threshold-review details { margin-top: 10px; }
 .chart { height: 280px; margin-top: 12px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { border-bottom: 1px solid #e5ebf3; padding: 7px; text-align: left; }
